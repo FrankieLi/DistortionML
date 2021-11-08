@@ -1,6 +1,6 @@
 import numpy as np
 
-# import numba
+import numba
 
 epsf = np.finfo(float).eps
 sqrt_epsf = np.sqrt(epsf)
@@ -8,7 +8,7 @@ sqrt_epsf = np.sqrt(epsf)
 
 # @numba.njit(nogil=True, cache=False, parallel=False)
 def row_norm(a, out=None):
-    out = out if out is not None else np.empty(len(a))
+    out = out if out is not None else np.empty_like(a)
 
     n, dim = a.shape
     for i in range(n):
@@ -20,7 +20,19 @@ def row_norm(a, out=None):
 
     return out
 
+def row_sqrnorm(a, out=None):
+    out = out if out is not None else np.empty_like(a)
 
+    n, dim = a.shape
+    for i in range(n):
+        sqr_norm = a[i, 0] * a[i, 0]
+        for j in range(1, dim):
+            sqr_norm += a[i, j]*a[i, j]
+
+        out[i] = sqr_norm
+
+    return out
+    
 # @numba.njit(nogil=True, cache=False, parallel=False)
 def unit_vector(a, out=None):
     out = out if out is not None else np.empty_like(a)
@@ -110,14 +122,46 @@ def ray_plane_trivial(rays, tvec):
 
     """
     rays = np.atleast_2d(rays)  # shape (npts, 3)
-    output = np.nan*np.ones_like(rays)
+    # output = np.nan*np.ones_like(rays)
+    output = np.empty_like(rays)
 
     numerator = tvec[2]
     for i in range(len(rays)):
         denominator = rays[i, 2]
         if denominator < 0:
-            output[i, :] = rays[i, :] * numerator / denominator
+            output[i, :] = rays[i, :] * (numerator / denominator)
+        else:
+            output[i, :] = np.nan
     return (output - tvec)[:, :2]
+
+#@numba.njit(parallel=True)
+@numba.njit
+def pinhole_constraint_helper(rays, tvecs, sqr_radii, result):
+    """
+    The whole operations of the pinhole constraint put together in
+    a single function.
+
+    returns an array with booleans for the rays that pass the constraint
+    """
+    for ray_index in numba.prange(len(rays)):
+        recip_denominator = 1.0/rays[ray_index, 2]
+
+        if not np.isfinite(recip_denominator):
+            result[ray_index] = False
+            continue
+
+        is_valid = True
+        for tvec_index in range(len(tvecs)):
+            factor = tvecs[tvec_index, 2] * recip_denominator
+            plane_x = rays[ray_index, 0] * factor
+            plane_y = rays[ray_index, 1] * factor
+            sqr_norm = plane_x*plane_x + plane_y*plane_y
+            if sqr_norm > sqr_radii[tvec_index]:
+                is_valid = False
+                break
+
+        result[ray_index] = is_valid
+    return result
 
 
 # @numba.njit(nogil=True, cache=False, parallel=True)
@@ -151,18 +195,29 @@ def pinhole_constraint(pixel_xys, voxel_vec, rmat_d_reduced, tvec_d,
     Notes
     -----
     !!! Pinhole plane normal is currently FIXED to [0, 0, 1]
-
     """
+    pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + (tvec_d - voxel_vec)
+    tvecs = np.empty((2,3))
+    sqr_radii = np.empty((2,))
+    result = np.empty((len(pixel_xys)), dtype=np.bool_)
+    tvecs[:] = -voxel_vec
+    tvecs[1] += np.r_[0., 0., -thickness]
+    sqr_radii[:] = radius * radius
+
+    return pinhole_constraint_helper(pv_ray_lab, tvecs, sqr_radii, result)
+'''
     tvec_ph_b = np.array([0., 0., -thickness])
-    pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + tvec_d - voxel_vec
+    pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + (tvec_d - voxel_vec)
     # !!! was previously performing unnecessary trival operations
     # rmat_ph = np.eye(3)
     # fint = row_norm(ray_plane(pv_ray_lab, rmat_ph, -voxel_vec))
     # bint = row_norm(ray_plane(pv_ray_lab, rmat_ph, tvec_ph_b - voxel_vec))
-    fint = row_norm(ray_plane_trivial(pv_ray_lab, -voxel_vec))
-    bint = row_norm(ray_plane_trivial(pv_ray_lab, tvec_ph_b - voxel_vec))
-    return np.logical_and(fint <= radius, bint <= radius)
+    fint = row_sqrnorm(ray_plane_trivial(pv_ray_lab, -voxel_vec))
+    bint = row_sqrnorm(ray_plane_trivial(pv_ray_lab, tvec_ph_b - voxel_vec))
 
+    sqr_radius = radius * radius
+    return np.logical_and(fint <= sqr_radius, bint <= sqr_radius)
+'''
 
 def compute_critical_voxel_radius(offset, radius, thickness):
     """

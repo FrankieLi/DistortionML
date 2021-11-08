@@ -81,7 +81,7 @@ vcrds = np.vstack([vx, vy, np.ones_like(vx)*layer_standoff]).T
 # =============================================================================
 def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
                perf_acc=None):
-    coords = coords[:10] # limit...
+    #coords = coords[:10] # limit...
 
     setup_t0 = time.perf_counter_ns()
     # need the cartesian pixel coordinates
