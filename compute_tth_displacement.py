@@ -1,7 +1,7 @@
 import os
 
 import logging
-
+import time
 import h5py
 
 from matplotlib import pyplot as plt
@@ -59,10 +59,6 @@ rho_crit = phutil.compute_critical_voxel_radius(
 )
 rho_crit -= voxel_size  # make sure "voxel" is within the critical radius
 
-# need the cartesian pixel coordinates
-py, px = det.pixel_coords
-pixel_xys = np.vstack([px.flatten(), py.flatten()]).T
-
 # also need the reference pixel angles as computed from the origin
 ref_ptth, ref_peta = det.pixel_angles()
 
@@ -83,40 +79,79 @@ vcrds = np.vstack([vx, vy, np.ones_like(vx)*layer_standoff]).T
 # =============================================================================
 # %% GRAND LOOP
 # =============================================================================
+def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
+               perf_acc=None):
+    coords = coords[:10] # limit...
 
-# loop over voxels to aggregate pixel angles and contributing voxel count
-master_ptth = np.zeros(det.shape, dtype=float)
-voxel_count = np.zeros(det.shape, dtype=float)
-reduced_rmat = np.ascontiguousarray(det.rmat[:, :2].T)  # transpose for np.dot
-for iv, vcrd in enumerate(tqdm(vcrds)):
-    # need new beam vector from curent voxel coordinate
-    new_bv = phutil.compute_offset_beam_vector(bhat, rho, np.atleast_2d(vcrd))
-    det.bvec = new_bv
+    setup_t0 = time.perf_counter_ns()
+    # need the cartesian pixel coordinates
+    py, px = detector.pixel_coords
+    pixel_xys = np.vstack([px.flatten(), py.flatten()]).T
 
-    # mask detector pixels
-    mask = phutil.pinhole_constraint(
-        pixel_xys, np.array(vcrd),
-        reduced_rmat, det.tvec,
-        ph_radius, ph_thickness
-    )  # no reshape # .reshape(det.shape)
+    # loop over voxels to aggregate pixel angles and contributing voxel count
+    master_ptth = np.zeros(detector.shape, dtype=float)
+    voxel_count = np.zeros(detector.shape, dtype=float)
+    reduced_rmat = np.ascontiguousarray(detector.rmat[:, :2].T)  # transpose for np.dot
+    setup_t1 = time.perf_counter_ns()
 
-    if np.any(mask):
-        # compute pixel angles that satisfy the pinhole constraint
-        reduced_xys = pixel_xys[mask, :]
-        mask = mask.reshape(det.shape)
-        ptth = np.nan*np.ones(det.shape)
-        angs, _ = xfcapi.detectorXYToGvec(
-                reduced_xys, det.rmat, ct.identity_3x3,
-                det.tvec, ct.zeros_3, np.array(vcrd),
+    loop_t0 = time.perf_counter_ns()
+    acc_cobv = 0
+    acc_phc = 0
+    acc_other = 0
+    for iv, coord in enumerate(tqdm(coords)):
+        # need new beam vector from curent voxel coordinate
+        cobv_t0 = time.perf_counter_ns()
+        new_bv = phutil.compute_offset_beam_vector(bhat, rho, np.atleast_2d(coord))
+        cobv_t1 = time.perf_counter_ns()
+        det.bvec = new_bv
+
+        # mask detector pixels
+        phc_t0 = time.perf_counter_ns()
+        mask = phutil.pinhole_constraint(
+            pixel_xys, np.array(coord),
+            reduced_rmat, detector.tvec,
+            pinhole_radius, pinhole_thickness
+        )  # no reshape # .reshape(det.shape)
+        phc_t1 = time.perf_counter_ns()
+
+        other_t0 = time.perf_counter_ns()
+        if np.any(mask):
+            # compute pixel angles that satisfy the pinhole constraint
+            reduced_xys = pixel_xys[mask, :]
+            mask = mask.reshape(detector.shape)
+            ptth = np.nan*np.ones(detector.shape)
+            angs, _ = xfcapi.detectorXYToGvec(
+                reduced_xys, detector.rmat, ct.identity_3x3,
+                detector.tvec, ct.zeros_3, np.array(coord),
                 beamVec=new_bv)
-        ptth[mask] = angs[0]
+            ptth[mask] = angs[0]
 
-        master_ptth = np.nansum(
-            np.stack([master_ptth, ptth], axis=0),
-            axis=0
-        )
-        voxel_count += mask
+            master_ptth = np.nansum(
+                np.stack([master_ptth, ptth], axis=0),
+                axis=0
+            )
+            voxel_count += mask
+        other_t1 = time.perf_counter_ns()
+        acc_cobv += cobv_t1 - cobv_t0
+        acc_phc += phc_t1 - phc_t0
+        acc_other += other_t1 - other_t0
 
+    loop_t1 = time.perf_counter_ns()
+
+    if perf_acc is not None:
+        perf_acc['gl_setup'] = perf_acc.get('gl_setup', 0) + (setup_t1 - setup_t0)
+        perf_acc['gl_loop'] = perf_acc.get('gl_loop', 0) + (loop_t1 - loop_t0)
+        perf_acc['gl_computeoffset'] = perf_acc.get('gl_compute_offset', 0) + acc_cobv
+        perf_acc['gl_constraint'] = perf_acc.get('gl_constraint', 0) + acc_phc
+        perf_acc['gl_other'] = perf_acc.get('gl_other', 0) + acc_other
+    return master_ptth, voxel_count
+
+perf_results = dict()
+
+master_ptth, voxel_count = grand_loop(vcrds, det, bhat, rho, ph_radius, ph_thickness, perf_acc=perf_results)
+
+for key, val in perf_results.items():
+    print(f"{key}: {float(val)/10**9}")
 
 # apply panel buffer if applicable
 corr = np.array(master_ptth/voxel_count - ref_ptth, dtype=np.float32)
