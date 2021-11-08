@@ -136,27 +136,31 @@ def ray_plane_trivial(rays, tvec):
 
 #@numba.njit(parallel=True)
 @numba.njit
-def pinhole_constraint_helper(rays, tvecs, sqr_radii, result):
+def pinhole_constraint_helper(rays, tvecs, radius, result):
     """
     The whole operations of the pinhole constraint put together in
     a single function.
 
     returns an array with booleans for the rays that pass the constraint
     """
-    for ray_index in numba.prange(len(rays)):
-        recip_denominator = 1.0/rays[ray_index, 2]
+    nrays = len(rays)
+    nvecs = len(tvecs)
+    sqr_radius = radius*radius
+    for ray_index in numba.prange(nrays):
+        denominator = rays[ray_index, 2]
 
-        if not np.isfinite(recip_denominator):
+        if denominator > 0.:
             result[ray_index] = False
             continue
 
         is_valid = True
-        for tvec_index in range(len(tvecs)):
-            factor = tvecs[tvec_index, 2] * recip_denominator
+        for tvec_index in range(nvecs):
+            numerator = tvecs[tvec_index, 2]
+            factor = numerator / denominator
             plane_x = rays[ray_index, 0] * factor
             plane_y = rays[ray_index, 1] * factor
             sqr_norm = plane_x*plane_x + plane_y*plane_y
-            if sqr_norm > sqr_radii[tvec_index]:
+            if sqr_norm > sqr_radius:
                 is_valid = False
                 break
 
@@ -202,9 +206,8 @@ def pinhole_constraint(pixel_xys, voxel_vec, rmat_d_reduced, tvec_d,
     result = np.empty((len(pixel_xys)), dtype=np.bool_)
     tvecs[:] = -voxel_vec
     tvecs[1] += np.r_[0., 0., -thickness]
-    sqr_radii[:] = radius * radius
 
-    return pinhole_constraint_helper(pv_ray_lab, tvecs, sqr_radii, result)
+    return pinhole_constraint_helper(pv_ray_lab, tvecs, radius, result)
 '''
     tvec_ph_b = np.array([0., 0., -thickness])
     pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + (tvec_d - voxel_vec)
