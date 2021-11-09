@@ -98,6 +98,7 @@ def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
     acc_cobv = 0
     acc_phc = 0
     acc_other = 0
+    acc_xy2g = 0
     for iv, coord in enumerate(tqdm(coords)):
         # need new beam vector from curent voxel coordinate
         cobv_t0 = time.perf_counter_ns()
@@ -117,13 +118,16 @@ def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
         other_t0 = time.perf_counter_ns()
         if np.any(mask):
             # compute pixel angles that satisfy the pinhole constraint
+            #print(f"it {iv}: mask has {np.sum(mask)} pixels set. {pixel_xys.shape} {mask.shape}")
             reduced_xys = pixel_xys[mask, :]
             mask = mask.reshape(detector.shape)
             ptth = np.nan*np.ones(detector.shape)
+            xy2g_t0 = time.perf_counter_ns()
             angs, _ = xfcapi.detectorXYToGvec(
                 reduced_xys, detector.rmat, ct.identity_3x3,
                 detector.tvec, ct.zeros_3, np.array(coord),
                 beamVec=new_bv)
+            acc_xy2g += time.perf_counter_ns() - xy2g_t0
             ptth[mask] = angs[0]
 
             master_ptth = np.nansum(
@@ -144,6 +148,7 @@ def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
         perf_acc['gl_computeoffset'] = perf_acc.get('gl_compute_offset', 0) + acc_cobv
         perf_acc['gl_constraint'] = perf_acc.get('gl_constraint', 0) + acc_phc
         perf_acc['gl_other'] = perf_acc.get('gl_other', 0) + acc_other
+        perf_acc['gl_xy2g'] = perf_acc.get('gl_xy2g', 0) + acc_xy2g
     return master_ptth, voxel_count
 
 perf_results = dict()
