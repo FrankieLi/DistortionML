@@ -7,10 +7,11 @@ sqrt_epsf = np.sqrt(epsf)
 
 
 # @numba.njit(nogil=True, cache=False, parallel=False)
+@numba.njit
 def row_norm(a, out=None):
-    out = out if out is not None else np.empty_like(a)
-
     n, dim = a.shape
+    out = out if out is not None else np.empty((n,))
+
     for i in range(n):
         sqr_norm = a[i, 0] * a[i, 0]
         for j in range(1, dim):
@@ -20,10 +21,12 @@ def row_norm(a, out=None):
 
     return out
 
+#@numba.njit(parallel=True, nogil=True)
+@numba.njit
 def row_sqrnorm(a, out=None):
-    out = out if out is not None else np.empty_like(a)
-
     n, dim = a.shape
+    out = out if out is not None else np.empty((n,))
+
     for i in range(n):
         sqr_norm = a[i, 0] * a[i, 0]
         for j in range(1, dim):
@@ -32,7 +35,7 @@ def row_sqrnorm(a, out=None):
         out[i] = sqr_norm
 
     return out
-    
+
 # @numba.njit(nogil=True, cache=False, parallel=False)
 def unit_vector(a, out=None):
     out = out if out is not None else np.empty_like(a)
@@ -97,7 +100,8 @@ def ray_plane(rays, rmat, tvec):
     return np.dot(output - tvec, rmat)[:, :2]
 
 
-# @numba.njit(nogil=True, cache=False, parallel=True)
+#@numba.njit(parallel=True, nogil=True)
+@numba.njit
 def ray_plane_trivial(rays, tvec):
     """
     Calculate the primitive ray-plane intersection _without_ rotation
@@ -122,19 +126,24 @@ def ray_plane_trivial(rays, tvec):
 
     """
     rays = np.atleast_2d(rays)  # shape (npts, 3)
+    nrays = len(rays)
+    assert 3 == rays.shape[-1]
     # output = np.nan*np.ones_like(rays)
-    output = np.empty_like(rays)
+    output = np.empty((nrays, 2))
+    output.fill(np.nan)
 
     numerator = tvec[2]
     for i in range(len(rays)):
         denominator = rays[i, 2]
         if denominator < 0:
-            output[i, :] = rays[i, :] * (numerator / denominator)
-        else:
-            output[i, :] = np.nan
-    return (output - tvec)[:, :2]
+            factor = numerator/denominator
+            output[i, 0] = rays[i, 0] * factor - tvec[0]
+            output[i, 1] = rays[i, 1] * factor - tvec[1]
 
-#@numba.njit(parallel=True)
+    return output
+
+# numba parallel is underwherlming in this case
+#@numba.njit(parallel=True, nogil=True)
 @numba.njit
 def pinhole_constraint_helper(rays, tvecs, radius, result):
     """
@@ -156,15 +165,16 @@ def pinhole_constraint_helper(rays, tvecs, radius, result):
         is_valid = True
         for tvec_index in range(nvecs):
             numerator = tvecs[tvec_index, 2]
-            factor = numerator / denominator
-            plane_x = rays[ray_index, 0] * factor
-            plane_y = rays[ray_index, 1] * factor
+            factor = numerator/denominator
+            plane_x = rays[ray_index, 0]*factor - tvecs[tvec_index, 0]
+            plane_y = rays[ray_index, 1]*factor - tvecs[tvec_index, 1]
             sqr_norm = plane_x*plane_x + plane_y*plane_y
             if sqr_norm > sqr_radius:
                 is_valid = False
                 break
 
         result[ray_index] = is_valid
+
     return result
 
 
@@ -200,15 +210,15 @@ def pinhole_constraint(pixel_xys, voxel_vec, rmat_d_reduced, tvec_d,
     -----
     !!! Pinhole plane normal is currently FIXED to [0, 0, 1]
     """
+    #'''
     pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + (tvec_d - voxel_vec)
     tvecs = np.empty((2,3))
-    sqr_radii = np.empty((2,))
+    tvecs[0] = -voxel_vec
+    tvecs[1] = np.r_[0., 0., -thickness] - voxel_vec
     result = np.empty((len(pixel_xys)), dtype=np.bool_)
-    tvecs[:] = -voxel_vec
-    tvecs[1] += np.r_[0., 0., -thickness]
 
     return pinhole_constraint_helper(pv_ray_lab, tvecs, radius, result)
-'''
+    '''
     tvec_ph_b = np.array([0., 0., -thickness])
     pv_ray_lab = np.dot(pixel_xys, rmat_d_reduced) + (tvec_d - voxel_vec)
     # !!! was previously performing unnecessary trival operations
@@ -220,7 +230,7 @@ def pinhole_constraint(pixel_xys, voxel_vec, rmat_d_reduced, tvec_d,
 
     sqr_radius = radius * radius
     return np.logical_and(fint <= sqr_radius, bint <= sqr_radius)
-'''
+    '''
 
 def compute_critical_voxel_radius(offset, radius, thickness):
     """
