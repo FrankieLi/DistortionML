@@ -67,6 +67,7 @@ voxel_generator_xy = gridutil.make_tolerance_grid(
     voxel_size, 2*rho_crit, 1, adjust_window=True
 )[1]
 vx, vy = np.meshgrid(voxel_generator_xy, voxel_generator_xy)
+
 rhoc_mask = np.sum(np.stack([vx**2 + vy**2], axis=0), axis=0) <= rho_crit**2
 vx = vx[rhoc_mask].flatten()
 vy = vy[rhoc_mask].flatten()
@@ -99,7 +100,9 @@ def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
     acc_phc = 0
     acc_other = 0
     acc_xy2g = 0
+
     for iv, coord in enumerate(tqdm(coords)):
+
         # need new beam vector from curent voxel coordinate
         cobv_t0 = time.perf_counter_ns()
         new_bv = phutil.compute_offset_beam_vector(bhat, rho, np.atleast_2d(coord))
@@ -113,6 +116,7 @@ def grand_loop(coords, detector, bhat, rho, pinhole_radius, pinhole_thickness,
             reduced_rmat, detector.tvec,
             pinhole_radius, pinhole_thickness
         )  # no reshape # .reshape(det.shape)
+
         phc_t1 = time.perf_counter_ns()
 
         other_t0 = time.perf_counter_ns()

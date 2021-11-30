@@ -1,6 +1,7 @@
 import numpy as np
 
 import numba
+import torch
 
 epsf = np.finfo(float).eps
 sqrt_epsf = np.sqrt(epsf)
@@ -60,6 +61,44 @@ def compute_offset_beam_vector(bv, rho, tv, out=None):
     out = out if out is not None else np.empty_like(bv)
     return -unit_vector(-bv*rho - tv)
 
+def ray_plane_torch(rays, rmat, tvec):
+    """
+    Calculate the primitive ray-plane intersection.
+    NOTE: `rays`, `rmat`, and `tvect` need to have `requires_grad=True`
+    in order for their corresponding partial derivatives be calculated.
+
+    Parameters
+    ----------
+    rays : torch.Tensor, (n, 3)
+        The vstacked collection of rays to intersect with the specified plane.
+    rmat : torch.Tensor, (3, 3)
+        The rotation matrix defining the orientation of the plane in the
+        reference CS.  The plane normal is the last column.
+    tvec : torch.Tensor, (3,)
+        The translation vector components in the reference frame used to
+        describe a point on the plane (in this case the origin of the local
+        planar CS).
+
+    Returns
+    -------
+    ndarray, (n, 2)
+        The local planar (x, y) coordinates of the intersection points, NaN if
+        no intersection.
+
+    NOTES
+    -----
+
+    """
+    nhat = rmat[:, 2].contiguous()
+    nhat.requires_grad_(True)
+
+    output = np.nan*torch.ones_like(rays)
+    numerator = torch.dot(tvec, nhat)
+    for i in range(len(rays)):
+        denominator = torch.dot(rays[i, :], nhat)
+        if denominator < 0:
+            output[i, :] = rays[i, :] * numerator / denominator
+    return torch.matmul(output - tvec, rmat)[:, :2]
 
 # @numba.njit(nogil=True, cache=False, parallel=True)
 def ray_plane(rays, rmat, tvec):
